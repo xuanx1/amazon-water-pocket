@@ -1,6 +1,10 @@
-# Wet Pockets
+# Amazon Wet Pockets
 
-An interactive ecological-recon map that interpolates sparse Amazon rain gauges into a continuous surface to reveal **wet pockets** (the forest's moisture-recycling cores) and emerging **dry pockets** (where clearing is breaking the rain cycle).
+<img width="1918" height="1027" alt="Screenshot 2026-06-11 134541" src="https://github.com/user-attachments/assets/219837c7-bbc2-4178-8939-c07c152fd65a" />
+
+An [ecological-recon map](https://xuanx1.github.io/amazon-water-pocket/Wet%20Pockets.html) that interpolates sparse Amazon rain gauges into a
+continuous surface to reveal **wet pockets** (the forest's moisture-recycling cores) and
+emerging **dry pockets** (where clearing is breaking the rain cycle).
 
 > **Thesis** — the rainforest makes much of its own rain through evapotranspiration
 > ("flying rivers"). Where the canopy is cleared, dry pockets open up that interpolation can
