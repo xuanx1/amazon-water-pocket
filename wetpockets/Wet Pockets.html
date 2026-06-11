@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Wet Pockets — Interpolating the Amazon's Own Rain</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+
+  :root {
+    --bg0:#070716; --bg1:#0d0d22;
+    --panel:rgba(14,15,34,0.97); --panel-2:rgba(18,18,42,0.99);
+    --edge:rgba(54,230,255,0.5); --edge-soft:rgba(54,230,255,0.22);
+    --phos:#36e6ff; --phos-dim:#4aa8d8; --amber:#ff5bc8; --cyan:#5fe6ff;
+    --ink:#e6e9ff; --ink-soft:#8b93c8; --sepia:#8b93c8;
+    --grid:rgba(54,230,255,0.055);
+    --green:#36e6ff; --ochre:#e0a24e; --rain:#46a8e0; --wet:#19d7e6; --dry:#ff3d7f;
+    --line:rgba(64,240,160,0.30); --line-soft:rgba(64,240,160,0.14);
+    --glass:var(--panel); --glass-edge:var(--edge); --ink:#e6e9ff;
+    --shadow:0 14px 44px -12px rgba(0,0,0,0.8);
+    --mono:"IBM Plex Mono", ui-monospace, monospace;
+    --sans:"IBM Plex Sans", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body { font-family: var(--sans); color: var(--ink); background: var(--bg0); -webkit-font-smoothing: antialiased; }
+  #stage { position: fixed; inset: 0; background: radial-gradient(130% 120% at 50% 0%, #12122e 0%, #0a0a1f 58%, #060614 100%); }
+  #stage::before { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 46px 46px; }
+  #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #field { z-index: 1; } #geo { z-index: 2; } #rivers { z-index: 3; pointer-events: none; }
+  #flow { z-index: 4; } #pockets { z-index: 5; } #stations { z-index: 6; cursor: crosshair; }
+  #labels { z-index: 7; pointer-events: none; }
+  .compare-clip { clip-path: inset(0 0 0 var(--divx, 50%)); }
+
+  /* HUD framing: scanlines, vignette, corner brackets */
+  #fx { position: fixed; inset: 0; z-index: 14; pointer-events: none; overflow: hidden;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.11) 2px 3px); }
+  #fx::after { content:""; position:absolute; inset:0; box-shadow: inset 0 0 160px 20px rgba(0,0,0,0.4); }
+  /* ethereal scan sweep drifting down the frame */
+  #fx::before { content:""; position:absolute; left:0; right:0; height:42%; top:-42%;
+    background: linear-gradient(180deg, rgba(54,230,255,0) 0%, rgba(54,230,255,0.05) 60%, rgba(120,245,255,0.16) 92%, rgba(255,79,216,0.10) 100%);
+    animation: scan-sweep 7s linear infinite; }
+  @keyframes scan-sweep { 0% { top:-46%; } 100% { top:104%; } }
+  @media (prefers-reduced-motion: reduce) { #fx::before { display:none; } }
+  .hud-corner { position: fixed; width: 24px; height: 24px; z-index: 13; pointer-events: none; border: 2px solid var(--phos); opacity: 0.55; box-shadow: 0 0 10px -2px var(--phos); animation: edge-pulse 4s ease-in-out infinite; }
+  .hud-corner.tl { top: 50px; left: 8px; border-right:0; border-bottom:0; }
+  .hud-corner.tr { top: 50px; right: 8px; border-left:0; border-bottom:0; }
+  .hud-corner.bl { bottom: 8px; left: 8px; border-right:0; border-top:0; }
+  .hud-corner.br { bottom: 8px; right: 8px; border-left:0; border-top:0; }
+
+  /* panels — dark bracketed HUD modules */
+  .panel { position: fixed; z-index: 20; background: var(--panel); border: 0; border-radius: 0;
+    clip-path: polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px);
+    box-shadow: 0 16px 50px -14px rgba(0,0,0,0.9), inset 0 1px 0 rgba(54,230,255,0.28), inset 0 0 44px -8px rgba(54,230,255,0.2); }
+  @keyframes edge-pulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
+
+  /* TOP COMMAND BAR */
+  #titlePanel { top: 0; left: 0; right: 0; width: auto; max-width: none; height: 46px; padding: 0 16px 0 18px;
+    display: flex; align-items: center; gap: 16px; border: 0; border-bottom: 1px solid var(--edge); border-radius: 0;
+    background: linear-gradient(180deg, rgba(9,28,21,0.96), rgba(6,20,15,0.82)); }
+  #titlePanel h1 { font-family: var(--mono); font-weight: 600; font-size: 15px; letter-spacing: 4px;
+    text-transform: uppercase; margin: 0; line-height: 1; color: var(--phos); position: relative;
+    text-shadow: 0 0 12px rgba(54,230,255,0.55), -1.2px 0 rgba(255,79,216,0.5), 1.2px 0 rgba(54,230,255,0.5);
+    animation: title-flicker 6s steps(1) infinite; }
+  @keyframes title-flicker { 0%,97%,100% { opacity: 1; } 97.5% { opacity: 0.55; } 98.5% { opacity: 0.85; } 99.2% { opacity: 0.4; } }
+  @media (prefers-reduced-motion: reduce) { #titlePanel h1 { animation: none; } }
+  #titlePanel h1 em { font-style: normal; color: var(--ink); }
+  #titlePanel .sub { font: 500 10px var(--mono); letter-spacing: 1.5px; text-transform: uppercase; color: var(--ink-soft);
+    margin: 0; padding-left: 16px; border-left: 1px solid var(--edge-soft); white-space: nowrap; }
+  #titlePanel .sysline { font: 500 10px var(--mono); letter-spacing: 1.5px; text-transform: uppercase; color: var(--amber);
+    display: flex; align-items: center; gap: 7px; margin-left: auto; white-space: nowrap; }
+  #titlePanel .sysline .rec { width: 8px; height: 8px; border-radius: 50%; background: var(--dry); animation: rec-blink 1.3s steps(1) infinite; box-shadow: 0 0 8px var(--dry); }
+  @keyframes rec-blink { 0%,50% { opacity: 1; } 51%,100% { opacity: 0.2; } }
+  #titlePanel .links { display: flex; flex-wrap: wrap; gap: 7px; }
+  .tbtn { font: 500 10px var(--mono); letter-spacing: 0.6px; text-transform: uppercase; color: var(--phos);
+    clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+    background: rgba(54,230,255,0.10); border: 0; box-shadow: inset 0 0 0 1px var(--edge); padding: 6px 10px; cursor: pointer; transition: .15s; }
+  .tbtn:hover { background: rgba(54,230,255,0.2); color: #eaf7ff; }
+
+  /* LEFT COMMAND RAIL */
+  #controls { top: 54px; left: 10px; right: auto; width: 256px; bottom: 126px; padding: 13px 14px; overflow-y: auto;
+    border-left: 2px solid var(--phos); }
+  /* themed scrollbars (neon-noir) */
+  #controls, #regionList, .sheet, #transectPanel { scrollbar-width: thin; scrollbar-color: rgba(54,230,255,0.32) transparent; }
+  #controls::-webkit-scrollbar, #regionList::-webkit-scrollbar, .sheet::-webkit-scrollbar, #transectPanel::-webkit-scrollbar { width: 5px; height: 5px; }
+  #controls::-webkit-scrollbar-track, #regionList::-webkit-scrollbar-track, .sheet::-webkit-scrollbar-track, #transectPanel::-webkit-scrollbar-track { background: transparent; }
+  #controls::-webkit-scrollbar-thumb, #regionList::-webkit-scrollbar-thumb, .sheet::-webkit-scrollbar-thumb, #transectPanel::-webkit-scrollbar-thumb {
+    background: rgba(54,230,255,0.28);
+    clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px); }
+  #controls::-webkit-scrollbar-thumb:hover, #regionList::-webkit-scrollbar-thumb:hover, .sheet::-webkit-scrollbar-thumb:hover, #transectPanel::-webkit-scrollbar-thumb:hover { background: rgba(54,230,255,0.5); }
+  .group { margin-bottom: 15px; }
+  .group:last-child { margin-bottom: 2px; }
+  .glabel { font: 600 10px var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--phos);
+    margin-bottom: 9px; display: flex; align-items: center; gap: 8px; }
+  .glabel::before { content: "▸"; color: var(--phos-dim); font-size: 9px; }
+  .glabel::after { content: ""; flex: 1; height: 1px; background: var(--edge-soft); }
+
+  .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+  .seg button { font: 500 10.5px var(--mono); letter-spacing: 0.4px; padding: 7px 6px;
+    clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+    border: 0; background: rgba(255,255,255,0.07); color: var(--ink); cursor: pointer; transition: .14s;
+    display: flex; align-items: center; gap: 6px; justify-content: center; }
+  .seg button:not(.on) { box-shadow: inset 0 0 0 1px var(--edge-soft); }
+  .seg button .sw { width: 9px; height: 9px; border-radius: 1px; }
+  .seg button:hover { background: rgba(54,230,255,0.14); color: var(--ink); }
+  .seg button.on { background: var(--phos); color: #0a0a1f; border-color: var(--phos); font-weight: 600; box-shadow: 0 0 12px -2px rgba(54,230,255,0.6); }
+
+  .toggle { display: flex; align-items: center; gap: 9px; padding: 5px 2px; cursor: pointer; user-select: none; }
+  .toggle .box { width: 30px; height: 16px; border-radius: 2px; background: rgba(255,255,255,0.08);
+    position: relative; transition: .16s; flex: none; border: 1px solid var(--edge); }
+  .toggle .box::after { content: ""; position: absolute; top: 1.5px; left: 2px; width: 11px; height: 11px;
+    border-radius: 1px; background: var(--ink-soft); transition: .16s; }
+  .toggle.on .box { background: rgba(54,230,255,0.22); }
+  .toggle.on .box::after { transform: translateX(14px); background: var(--phos); box-shadow: 0 0 8px var(--phos); }
+  .toggle .t-label { font: 500 11.5px var(--mono); color: var(--ink); display: flex; align-items: center; gap: 7px; }
+  .toggle .dot { width: 8px; height: 8px; border-radius: 1px; }
+
+  .slider { margin: 11px 0 4px; }
+  .slider .row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .slider .name { font: 500 11px var(--mono); letter-spacing: 0.4px; color: var(--ink); }
+  .slider .val { font: 600 12px var(--mono); color: var(--phos); }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 3px; border-radius: 2px;
+    background: linear-gradient(90deg, var(--phos), var(--edge-soft)); outline: none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 1px;
+    background: var(--bg1); border: 2px solid var(--phos); cursor: pointer; box-shadow: 0 0 8px -1px var(--phos); }
+  input[type=range]::-moz-range-thumb { width: 13px; height: 13px; border-radius: 1px; background: var(--bg1);
+    border: 2px solid var(--phos); cursor: pointer; }
+  .hint { font: 400 10px var(--mono); letter-spacing: 0.2px; color: var(--ink-soft); line-height: 1.5; margin-top: 8px; }
+
+  /* BOTTOM TIMELINE (with merged legend) */
+  #timeline { left: 276px; right: 312px; bottom: 14px; width: auto; transform: none;
+    display: flex; flex-direction: column; gap: 9px; padding: 10px 16px 12px; }
+  .tl-legend { display: flex; align-items: center; gap: 14px; padding-bottom: 9px; border-bottom: 1px solid var(--edge-soft); }
+  .tl-legend .lt { font: 600 9.5px var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--phos); white-space: nowrap; flex: none; }
+  .legbar-wrap { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; }
+  .legbar-wrap span { font: 500 9.5px var(--mono); color: var(--ink-soft); flex: none; }
+  .tl-legend .legbar { flex: 1; height: 9px; margin: 0; border: 1px solid var(--edge-soft); }
+  .tl-legend .pock-key { margin: 0; flex: none; }
+  .tl-controls { display: flex; align-items: center; gap: 14px; }
+  #playBtn { width: 32px; height: 32px; border: 1px solid var(--phos); background: rgba(54,230,255,0.12);
+    clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+    color: var(--phos); cursor: pointer; flex: none; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+  #playBtn:hover { background: var(--phos); color: #0a0a1f; }
+  .tl-main { flex: 1; }
+  .tl-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
+  #monthLabel { font: 600 13px var(--mono); letter-spacing: 1px; text-transform: uppercase; color: var(--ink); }
+  #yearLabel { font: 500 10px var(--mono); letter-spacing: 0.6px; color: var(--amber); }
+  .tl-modes { display: flex; gap: 6px; flex: none; }
+  .tl-modes button { font: 500 10px var(--mono); letter-spacing: 0.5px; text-transform: uppercase; padding: 6px 9px;
+    clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+    border: 0; box-shadow: inset 0 0 0 1px var(--edge-soft); background: rgba(255,255,255,0.06); color: var(--ink); cursor: pointer; }
+  .tl-modes button.on { background: var(--phos); color: #0a0a1f; border-color: var(--phos); font-weight: 600; }
+
+  /* RIGHT INTEL RAIL */
+  #priority { top: 54px; right: 10px; left: auto; bottom: 18px; width: 296px; max-height: none; padding: 13px 14px;
+    display: flex; flex-direction: column; border-right: 2px solid var(--phos); }
+  #priority .phead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 11px; }
+  #priority h2 { font: 600 11px var(--mono); letter-spacing: 1.6px; text-transform: uppercase; margin: 0; color: var(--phos); }
+  #regionList { overflow-y: auto; display: flex; flex-direction: column; gap: 7px; }
+  .region { border: 0; padding: 9px 11px; cursor: pointer;
+    clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+    background: linear-gradient(90deg, rgba(255,61,127,0.16), rgba(255,255,255,0.03) 40%); transition: .14s; }
+  .region.protect { background: linear-gradient(90deg, rgba(25,215,230,0.16), rgba(255,255,255,0.03) 40%); }
+  .region:hover { background: rgba(54,230,255,0.12); }
+  .region .rtop { display: flex; align-items: center; gap: 7px; }
+  .region .rank { font: 600 11px var(--mono); color: #0a0a1f; background: var(--dry); border-radius: 2px;
+    padding: 2px 5px; flex: none; min-width: 18px; text-align: center; }
+  .region.protect .rank { background: var(--wet); color: #0a0a1f; }
+  .region .rname { font: 600 12px var(--sans); line-height: 1.15; color: var(--ink); }
+  .region .score { margin-left: auto; font: 600 12px var(--mono); color: var(--phos); flex: none; }
+  .region .resp { font: 500 10px var(--mono); letter-spacing: 0.3px; text-transform: uppercase; color: var(--amber); margin-top: 5px; }
+  .region .why { font: 400 10.5px var(--sans); color: var(--ink-soft); margin-top: 5px; line-height: 1.45; display: none; }
+  .region.open .why { display: block; }
+
+  /* legend bits (in timeline) */
+  .lt { font: 600 10px var(--mono); letter-spacing: 1px; text-transform: uppercase; color: var(--phos); margin-bottom: 7px; }
+  .legbar { height: 11px; border-radius: 2px; margin-bottom: 3px; }
+  .legends { display: flex; justify-content: space-between; font: 500 9.5px var(--mono); color: var(--ink-soft); }
+  .pock-key { display: flex; gap: 14px; font: 500 10px var(--mono); white-space: nowrap; color: var(--ink-soft); }
+  .pock-key span { display: flex; align-items: center; gap: 5px; }
+  .pock-key i { width: 14px; height: 0; border-top: 2px solid; display: inline-block; }
+
+  /* inspect popup */
+  #inspect { position: fixed; z-index: 30; width: 236px; padding: 12px 13px; display: none; pointer-events: none;
+    border-left: 2px solid var(--cyan); }
+  #inspect h3 { margin: 0 0 2px; font: 600 11px var(--mono); letter-spacing: 1px; text-transform: uppercase; color: var(--cyan); }
+  #inspect .coord { font: 500 10px var(--mono); color: var(--ink-soft); margin-bottom: 9px; }
+  #inspect .metric { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; font: 500 11px var(--mono); color: var(--ink); }
+  #inspect .metric b { font: 600 12px var(--mono); }
+  #inspect .klass { margin: 8px 0 2px; padding: 4px 8px; border-radius: 2px; font: 600 10px var(--mono); letter-spacing: 1px; text-transform: uppercase; text-align: center; }
+  #inspect .contribs { margin-top: 9px; border-top: 1px solid var(--edge-soft); padding-top: 7px; }
+  #inspect .contribs .ch { font: 600 9px var(--mono); letter-spacing: .8px; color: var(--phos); margin-bottom: 5px; }
+  #inspect .crow { display: flex; align-items: center; gap: 6px; font: 500 10.5px var(--mono); margin-bottom: 3px; color: var(--ink); }
+  #inspect .crow .cbar { height: 5px; border-radius: 2px; background: var(--cyan); flex: none; }
+  #inspect .crow .cn { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* compare */
+  #divider { position: fixed; z-index: 18; top: 0; bottom: 0; width: 2px; background: var(--phos); left: 50%; display: none; cursor: ew-resize; box-shadow: 0 0 12px var(--phos); }
+  #divider .knob { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 30px; height: 30px;
+    border-radius: 2px; background: var(--bg1); border: 1.5px solid var(--phos); display: flex; align-items: center;
+    justify-content: center; font-size: 13px; color: var(--phos); box-shadow: var(--shadow); }
+  .cmp-label { position: fixed; z-index: 18; top: 56px; font: 600 10px var(--mono); letter-spacing: 1px; text-transform: uppercase;
+    background: var(--panel); border: 1px solid var(--edge); padding: 5px 9px; border-radius: 2px; display: none; }
+  #cmpLeft { color: var(--ink-soft); } #cmpRight { color: var(--phos); }
+
+  /* overlays */
+  .modal { position: fixed; inset: 0; z-index: 50; background: rgba(2,10,7,0.7);
+    -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); display: none; align-items: center; justify-content: center; }
+  .modal.show { display: flex; }
+  .sheet { background: var(--panel-2); border: 1px solid var(--edge); border-left: 3px solid var(--phos); border-radius: 2px; box-shadow: var(--shadow);
+    max-width: 580px; width: calc(100vw - 40px); max-height: calc(100vh - 60px); overflow-y: auto; padding: 28px 32px; }
+  .sheet h2 { font: 600 22px var(--mono); letter-spacing: 2px; text-transform: uppercase; margin: 0 0 6px; color: var(--phos); }
+  .sheet h2 em { font-style: normal; color: var(--ink); }
+  .sheet .lead { color: var(--ink); font-size: 14px; line-height: 1.55; margin: 0 0 16px; }
+  .sheet p { font-size: 13px; line-height: 1.6; color: var(--ink-soft); }
+  .sheet h3 { font: 600 11px var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--phos); margin: 20px 0 7px; }
+  .sheet ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: var(--ink-soft); }
+  .sheet ul li { margin-bottom: 6px; }
+  .sheet .startbtn { margin-top: 22px; font: 600 12px var(--mono); letter-spacing: 1px; text-transform: uppercase; background: var(--phos); color: #0a0a1f;
+    border: none; border-radius: 2px; padding: 12px 22px; cursor: pointer; }
+  .sheet .startbtn:hover { background: #7af0ff; }
+  .sheet .closex { float: right; cursor: pointer; border: 1px solid var(--edge); background: rgba(54,230,255,0.06);
+    border-radius: 2px; width: 30px; height: 30px; font-size: 16px; color: var(--phos); }
+  .illus { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 14px 0 4px; }
+  .illus .mini { border: 1px solid var(--edge-soft); border-radius: 2px; padding: 10px; background: rgba(54,230,255,0.04); }
+  .illus .mini .cap { font: 500 10px var(--mono); color: var(--ink-soft); text-align: center; margin-top: 6px; }
+  .note { font: 400 10.5px var(--mono); color: var(--ink-soft); }
+
+  @media (max-width: 980px) {
+    #priority { display: none; }
+    #controls { bottom: 150px; }
+    #timeline { left: 276px; right: 14px; }
+  }
+  @media (max-width: 720px) {
+    #controls { display: none; }
+    #timeline { left: 14px; right: 14px; }
+  }
+
+  /* leave-one-out CV readout */
+  .loo { margin-top: 10px; padding: 9px 10px; border: 1px solid var(--edge-soft); border-radius: 2px; background: rgba(54,230,255,0.04); }
+  .loo-lab { font: 600 9.5px var(--mono); letter-spacing: 1px; text-transform: uppercase; color: var(--ink-soft); }
+  .loo-val { float: right; font: 600 13px var(--mono); color: var(--phos); }
+  .loo-sub { font: 400 10px var(--mono); color: var(--ink-soft); line-height: 1.45; margin-top: 5px; clear: both; }
+  .seg-btn.armed { background: var(--phos) !important; color: #0a0a1f !important; border-color: var(--phos) !important; }
+
+  /* transect profile panel */
+  #transectPanel { left: 50%; transform: translateX(-50%); bottom: 100px; width: min(560px, calc(100vw - 620px));
+    padding: 12px 14px 10px; display: none; }
+  #transectPanel.show { display: block; }
+  #transectPanel .th { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  #transectPanel .th h3 { margin: 0; font: 600 11px var(--mono); letter-spacing: 1px; text-transform: uppercase; color: var(--phos); }
+  #transectPanel .tkey { display: flex; gap: 12px; font: 500 10px var(--mono); color: var(--ink-soft); }
+  #transectPanel .tkey span { display: flex; align-items: center; gap: 4px; }
+  #transectPanel .tkey i { width: 12px; height: 2px; display: inline-block; }
+  #transectChart { width: 100%; height: 110px; display: block; }
+  #transectPanel .tclose { cursor: pointer; border: none; background: none; color: var(--ink-soft); font-size: 15px; }
+
+  /* guided tour */
+  #tourCard { position: fixed; z-index: 40; left: 276px; transform: none; bottom: 100px;
+    width: min(420px, calc(100vw - 620px)); padding: 16px 18px; display: none; border-left: 2px solid var(--amber); }
+  #tourCard.show { display: block; }
+  #tourCard .tnum { font: 600 10px var(--mono); letter-spacing: 1.4px; color: var(--amber); text-transform: uppercase; }
+  #tourCard h3 { margin: 4px 0 6px; font: 600 16px var(--mono); letter-spacing: 0.5px; text-transform: uppercase; color: var(--ink); }
+  #tourCard p { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--ink-soft); }
+  #tourCard .trow { display: flex; justify-content: space-between; align-items: center; margin-top: 13px; }
+  #tourCard .tdots { display: flex; gap: 5px; }
+  #tourCard .tdots i { width: 6px; height: 6px; border-radius: 1px; background: var(--edge); }
+  #tourCard .tdots i.on { background: var(--phos); box-shadow: 0 0 6px var(--phos); }
+  #tourCard .tbtns { display: flex; gap: 7px; }
+  #tourCard button { font: 500 11px var(--mono); letter-spacing: 0.5px; text-transform: uppercase; border-radius: 2px; padding: 7px 13px; cursor: pointer; border: 1px solid var(--edge); background: rgba(54,230,255,0.06); color: var(--ink); }
+  #tourCard button.prim { background: var(--phos); color: #0a0a1f; border-color: var(--phos); }
+
+  /* loading screen (orbital recon boot) */
+  #loader { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(130% 120% at 50% 10%, #12122e 0%, #0a0a1f 58%, #060614 100%); transition: opacity 0.6s ease; opacity: 1; }
+  #loader::before { content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image: repeating-linear-gradient(0deg, rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.12) 2px 3px),
+      linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: auto, 46px 46px, 46px 46px; }
+  #loader.hide { opacity: 0; pointer-events: none; }
+  .ld-inner { position: relative; text-align: center; width: min(420px, 86vw); }
+  .ld-eyebrow { font: 600 10px var(--mono); letter-spacing: 3px; text-transform: uppercase; color: var(--amber); margin-bottom: 18px; }
+  .ld-map { width: 230px; height: auto; display: block; margin: 0 auto 6px; overflow: visible; }
+  .ld-title { font: 600 34px var(--mono); letter-spacing: 8px; text-transform: uppercase; color: var(--phos); margin: 4px 0 0; line-height: 1; text-shadow: 0 0 18px rgba(54,230,255,0.5); }
+  .ld-title em { font-style: normal; color: var(--ink); }
+  .ld-sub { font: 400 12px var(--mono); letter-spacing: 1px; color: var(--ink-soft); margin-top: 10px; }
+  .ld-bar { width: 168px; height: 3px; border-radius: 2px; margin: 20px auto 0; overflow: hidden; background: rgba(54,230,255,0.15); position: relative; }
+  .ld-bar i { position: absolute; top: 0; left: 0; height: 100%; width: 42%; border-radius: 2px;
+    background: linear-gradient(90deg, transparent, var(--phos), transparent); animation: ld-bar 1.25s ease-in-out infinite; }
+  @keyframes ld-bar { 0% { left: -42%; } 100% { left: 100%; } }
+  .ld-basin-out { fill: none; stroke: var(--phos); stroke-width: 1.4; stroke-dasharray: 4 3; stroke-dashoffset: 520; animation: ld-draw 1.6s ease-out forwards; }
+  @keyframes ld-draw { to { stroke-dashoffset: 0; } }
+  .ld-sweep { animation: ld-sweep 1.9s cubic-bezier(.5,0,.3,1) infinite; }
+  @keyframes ld-sweep { 0% { transform: translateX(-80px); } 100% { transform: translateX(220px); } }
+  .ld-gauge { opacity: 1; transform-box: fill-box; transform-origin: center; transform: scale(0); animation: ld-dot 0.5s ease-out forwards; }
+  @keyframes ld-dot { 0% { opacity: 0; transform: scale(0); } 60% { opacity: 1; transform: scale(1.25); } 100% { opacity: 1; transform: scale(1); } }
+  @media (prefers-reduced-motion: reduce) { .ld-sweep, .ld-basin-out, .ld-gauge, .ld-bar i { animation: none; } .ld-basin-out { stroke-dashoffset: 0; } .ld-gauge { opacity: 1; transform: scale(1); } }
+
+</style>
+</head>
+<body>
+  <div id="loader">
+    <div class="ld-inner">
+      <div class="ld-eyebrow">Orbital Recon · ERA5 Observed Data</div>
+      <svg class="ld-map" viewBox="0 0 220 150" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="ld_rain" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#2a6189"/>
+            <stop offset="50%" stop-color="#4f93b8"/>
+            <stop offset="100%" stop-color="#9ec4cb"/>
+          </linearGradient>
+          <clipPath id="ld_basinClip">
+            <path d="M64 38 Q50 28 40 42 Q31 54 37 68 Q26 84 42 98 Q56 118 86 122 Q120 126 142 112 Q164 100 158 78 Q173 70 163 56 Q154 44 134 49 Q151 32 133 27 Q110 33 92 30 Q76 27 64 38 Z"/>
+          </clipPath>
+          <linearGradient id="ld_band" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#f4ecd9" stop-opacity="0"/>
+            <stop offset="50%" stop-color="#f4ecd9" stop-opacity="0.5"/>
+            <stop offset="100%" stop-color="#f4ecd9" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <g clip-path="url(#ld_basinClip)">
+          <rect x="0" y="0" width="220" height="150" fill="url(#ld_rain)"/>
+          <g fill="none" stroke="#16384f" stroke-width="0.7" opacity="0.32">
+            <path d="M20 50 Q70 40 120 48 T220 42"/>
+            <path d="M14 68 Q64 58 114 66 T220 60"/>
+            <path d="M22 86 Q72 77 122 84 T220 80"/>
+            <path d="M30 104 Q80 95 130 102 T220 98"/>
+          </g>
+          <g fill="none" stroke="#bfe0e6" stroke-width="0.7" opacity="0.5">
+            <path d="M150 56 Q110 60 70 58"/>
+            <path d="M150 72 Q108 78 64 74"/>
+            <path d="M150 90 Q112 96 72 92"/>
+          </g>
+          <rect class="ld-sweep" x="-80" y="0" width="80" height="150" fill="url(#ld_band)"/>
+        </g>
+        <ellipse cx="72" cy="66" rx="16" ry="12" fill="none" stroke="#15b0bd" stroke-width="2"/>
+        <ellipse cx="120" cy="100" rx="19" ry="11" fill="none" stroke="#d6296b" stroke-width="2"/>
+        <path class="ld-basin-out" d="M64 38 Q50 28 40 42 Q31 54 37 68 Q26 84 42 98 Q56 118 86 122 Q120 126 142 112 Q164 100 158 78 Q173 70 163 56 Q154 44 134 49 Q151 32 133 27 Q110 33 92 30 Q76 27 64 38 Z"/>
+        <g fill="#241c10" stroke="#f4ecd9" stroke-width="1">
+          <circle class="ld-gauge" style="animation-delay:.15s" cx="76" cy="60" r="2.8"/>
+          <circle class="ld-gauge" style="animation-delay:.30s" cx="108" cy="50" r="2.8"/>
+          <circle class="ld-gauge" style="animation-delay:.45s" cx="58" cy="86" r="2.8"/>
+          <circle class="ld-gauge" style="animation-delay:.55s" cx="120" cy="78" r="2.8"/>
+          <circle class="ld-gauge" style="animation-delay:.70s" cx="112" cy="104" r="2.8"/>
+          <circle class="ld-gauge" style="animation-delay:.85s" cx="86" cy="112" r="2.8"/>
+          <circle class="ld-gauge" style="animation-delay:1s" cx="142" cy="92" r="2.8"/>
+          <circle class="ld-gauge" style="animation-delay:.40s" cx="92" cy="74" r="2.8"/>
+        </g>
+      </svg>
+      <h1 class="ld-title">Wet <em>Pockets</em></h1>
+      <div class="ld-sub">Interpolating the Amazon's rain gauges…</div>
+      <div class="ld-bar"><i></i></div>
+    </div>
+  </div>
+  <div id="stage">
+    <canvas id="field"></canvas>
+    <canvas id="geo"></canvas>
+    <canvas id="rivers"></canvas>
+    <canvas id="flow"></canvas>
+    <canvas id="pockets"></canvas>
+    <canvas id="stations"></canvas>
+    <canvas id="labels"></canvas>
+  </div>
+
+  <!-- HUD chrome -->
+  <div id="fx"></div>
+  <div class="hud-corner tl"></div>
+  <div class="hud-corner tr"></div>
+  <div class="hud-corner bl"></div>
+  <div class="hud-corner br"></div>
+
+  <div id="divider"><div class="knob">⇄</div></div>
+  <div class="cmp-label" id="cmpLeft" style="left:18px;">◖ GAUGES ONLY</div>
+  <div class="cmp-label" id="cmpRight" style="right:18px;">INTERPOLATED SURFACE ◗</div>
+
+  <!-- title -->
+  <div class="panel" id="titlePanel">
+    <h1>WET <em>POCKETS</em></h1>
+    <div class="sub">Orbital Precip Recon · Amazon Basin</div>
+    <div class="sysline"><span class="rec"></span>ERA5 OBSERVED · LIVE INTERPOLATION</div>
+    <div class="links">
+      <button class="tbtn" id="aboutBtn">How to read this</button>
+      <button class="tbtn" id="tourBtn">▶ Guided tour</button>
+      <button class="tbtn" id="methodBtn">Methodology</button>
+    </div>
+  </div>
+
+  <!-- controls -->
+  <div class="panel" id="controls">
+    <div class="group">
+      <div class="glabel">Base layer</div>
+      <div class="seg" id="baseSeg">
+        <button data-base="rainfall" class="on"><span class="sw" style="background:linear-gradient(90deg,#b4cece,#1e547c)"></span>Rainfall</button>
+        <button data-base="forest"><span class="sw" style="background:linear-gradient(90deg,#c79a4b,#2b7a46)"></span>Forest</button>
+        <button data-base="temp"><span class="sw" style="background:linear-gradient(90deg,#4a7fae,#b5462f)"></span>Air temp</button>
+        <button data-base="conf"><span class="sw" style="background:linear-gradient(90deg,#b7473c,#dab25c,#468c60)"></span>Confidence</button>
+        <button data-base="none"><span class="sw" style="background:transparent;border:1px solid var(--line)"></span>Base map</button>
+      </div>
+    </div>
+    <div class="group">
+      <div class="glabel">Overlays</div>
+      <div class="toggle on" data-ov="pockets"><div class="box"></div><div class="t-label"><span class="dot" style="background:linear-gradient(90deg,var(--wet),var(--dry))"></span>Detected pockets</div></div>
+      <div class="toggle on" data-ov="flow"><div class="box"></div><div class="t-label"><span class="dot" style="background:var(--rain)"></span>Flying rivers</div></div>
+      <div class="toggle on" data-ov="stations"><div class="box"></div><div class="t-label"><span class="dot" style="background:var(--ink)"></span>Gauge stations</div></div>
+      <div class="toggle on" data-ov="geo"><div class="box"></div><div class="t-label"><span class="dot" style="background:var(--green)"></span>Basin & rivers</div></div>
+    </div>
+    <div class="group">
+      <div class="glabel">Interpolation</div>
+      <div class="seg" id="methodSeg" style="margin-bottom:11px;">
+        <button data-method="idw" class="on">IDW</button>
+        <button data-method="krige">Kriging</button>
+      </div>
+      <div id="idwControls">
+        <div class="slider">
+          <div class="row"><span class="name">Power (p)</span><span class="val" id="powerVal">2.0</span></div>
+          <input type="range" id="power" min="0.5" max="6" step="0.1" value="2" />
+        </div>
+        <div class="slider">
+          <div class="row"><span class="name">Search radius</span><span class="val" id="radiusVal">9°</span></div>
+          <input type="range" id="radius" min="2" max="20" step="0.5" value="9" />
+        </div>
+      </div>
+      <div id="krigeControls" style="display:none;">
+        <div class="slider">
+          <div class="row"><span class="name">Variogram range</span><span class="val" id="rangeVal">8°</span></div>
+          <input type="range" id="krange" min="2" max="20" step="0.5" value="8" />
+        </div>
+        <div class="slider">
+          <div class="row"><span class="name">Nugget</span><span class="val" id="nuggetVal">5%</span></div>
+          <input type="range" id="knugget" min="0" max="0.6" step="0.01" value="0.05" />
+        </div>
+      </div>
+      <div class="slider">
+        <div class="row"><span class="name">Pocket sensitivity</span><span class="val" id="sensVal">1.0×</span></div>
+        <input type="range" id="sens" min="0.5" max="2" step="0.05" value="1" />
+      </div>
+      <div class="hint" id="idwHint">Higher power → each gauge dominates its own neighbourhood (bullseyes). Lower power → smoother blend.</div>
+      <div class="loo" id="looBox">
+        <span class="loo-lab">Leave-one-out RMSE</span>
+        <span class="loo-val" id="looVal">— mm</span>
+        <div class="loo-sub" id="looSub">how well held-out gauges are predicted — lower is better. Tune the controls to minimise it.</div>
+      </div>
+    </div>
+    <div class="group">
+      <div class="glabel">Gauge data</div>
+      <div class="seg" style="grid-template-columns:1fr 1fr;">
+        <button class="seg-btn" id="importBtn">Import CSV…</button>
+        <button class="seg-btn" id="resetDataBtn">Reset sample</button>
+      </div>
+      <div class="hint" id="dataHint">Real ERA5 climatology (Open-Meteo) at 57 stations. Import a CSV (<b>name, lon, lat</b> + <b>annual</b> or <b>jan…dec</b>) to use your own.</div>
+      <input type="file" id="csvInput" accept=".csv,text/csv" style="display:none;" />
+    </div>
+    <div class="group">
+      <div class="glabel">Tools</div>
+      <div class="seg" style="grid-template-columns:1fr 1fr;">
+        <button class="seg-btn" id="dropBtn">+ Drop gauge</button>
+        <button class="seg-btn" id="transectBtn">Transect</button>
+      </div>
+      <div class="hint" id="toolHint">Drop hypothetical gauges and watch confidence improve; draw a transect for a cross-section profile.</div>
+    </div>
+  </div>
+
+  <!-- timeline (with merged legend) -->
+  <div class="panel" id="timeline">
+    <div class="tl-legend">
+      <span class="lt" id="legTitle">Monthly rainfall (mm)</span>
+      <div class="legbar-wrap">
+        <span id="legMin">30</span>
+        <div class="legbar" id="legBar"></div>
+        <span id="legMax">360+</span>
+      </div>
+      <div class="pock-key">
+        <span><i style="border-color:var(--wet)"></i>Wet pocket</span>
+        <span><i style="border-color:var(--dry)"></i>Dry pocket</span>
+      </div>
+    </div>
+    <div class="tl-controls">
+      <button id="playBtn">▶</button>
+      <div class="tl-main">
+        <div class="tl-top"><span id="monthLabel">February</span><span id="yearLabel">drying trend: off</span></div>
+        <input type="range" id="month" min="0" max="11" step="1" value="1" />
+      </div>
+      <div class="tl-modes">
+        <button id="modeSeason" class="on">Season</button>
+        <button id="modeTrend">Drying yrs</button>
+        <button id="cmpBtn">Compare</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- priority -->
+  <div class="panel" id="priority">
+    <div class="phead"><h2>Priority sub-regions</h2><button class="tbtn" id="exportBtn" style="padding:5px 9px;">↓ CSV</button></div>
+    <div id="regionList"></div>
+  </div>
+
+  <!-- inspect -->
+  <div class="panel" id="inspect"></div>
+
+  <!-- transect profile -->
+  <div class="panel" id="transectPanel">
+    <div class="th">
+      <h3>Transect profile</h3>
+      <div class="tkey">
+        <span><i style="background:#3a7ca8"></i>rain</span>
+        <span><i style="background:#2b7a46"></i>forest</span>
+        <span><i style="background:#c0683a"></i>temp</span>
+        <button class="tclose" id="transectClose">×</button>
+      </div>
+    </div>
+    <canvas id="transectChart"></canvas>
+  </div>
+
+  <!-- guided tour -->
+  <div class="panel" id="tourCard">
+    <div class="tnum" id="tourNum">Step 1 / 5</div>
+    <h3 id="tourTitle"></h3>
+    <p id="tourBody"></p>
+    <div class="trow">
+      <div class="tdots" id="tourDots"></div>
+      <div class="tbtns">
+        <button id="tourExit">Exit</button>
+        <button class="prim" id="tourNext">Next →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- intro overlay -->
+  <div class="modal" id="intro">
+    <div class="sheet">
+      <h2>Wet Pockets</h2>
+      <p class="lead">The Amazon makes much of its own rain. Water transpired by the canopy rises, blows west as <em>“flying rivers,”</em> and falls again — over and over across the basin. Clear the forest and that conveyor breaks, opening <strong>dry pockets</strong> that can spread.</p>
+      <p style="font-size:13px;line-height:1.6;margin:0 0 4px;">The trouble: rain gauges are sparse. This tool takes <strong>real rainfall from 57 stations</strong> (ERA5 reanalysis) and <strong>interpolates</strong> them into a continuous surface, so the pockets hiding <em>between</em> stations become visible.</p>
+      <div class="illus">
+        <div class="mini"><canvas id="introA" width="230" height="150" style="width:100%;height:auto;border-radius:6px;"></canvas><div class="cap">Gauges only — sparse dots</div></div>
+        <div class="mini"><canvas id="introB" width="230" height="150" style="width:100%;height:auto;border-radius:6px;"></canvas><div class="cap">Interpolated — pockets appear</div></div>
+      </div>
+      <h3>Try this</h3>
+      <ul>
+        <li>Drag <b>Power</b> & <b>Search radius</b> — watch the surface recompute live.</li>
+        <li>Hit <b>▶</b> to run the year; dry pockets open along the deforestation arc in the dry season.</li>
+        <li>Toggle <b>Flying rivers</b> and watch the streamlines run dry over the pockets — they recurve south against the Andes and thin where rainfall is below norm.</li>
+        <li>Use <b>Compare</b> to swipe gauges-only against the full surface.</li>
+        <li>Click anywhere on the map to inspect a cell.</li>
+      </ul>
+      <button class="startbtn" id="introStart">Open the atlas →</button>
+      <p class="note" style="margin-top:16px;">Rainfall &amp; air temperature are <strong>real ERA5 reanalysis</strong> (via Open-Meteo) at real station sites; geography is real (Natural Earth + HydroBASINS divide). Forest cover is the one modelled layer. Educational tool — not a climate or land-use study.</p>
+    </div>
+  </div>
+
+  <!-- methodology -->
+  <div class="modal" id="method">
+    <div class="sheet">
+      <button class="closex" data-close="method">×</button>
+      <h2>Methodology <em>&amp; caveats</em></h2>
+      <p class="lead">What is real observation-based data, and what is modelled — stated plainly.</p>
+      <h3>The map</h3>
+      <p style="margin:0;">Geography is <strong>real public-domain vector data</strong>. Coastline and national borders for the whole continent come from Natural Earth (1:50m); the river network (Amazonas, Negro, Madeira, Tapajós, Xingu, Purus, Japurá, Branco, Ucayali, Marañón…) is Natural Earth, clipped to the basin. The Amazon-basin boundary is the <strong>real hydrological divide</strong> from HydroSHEDS HydroBASINS (level-3), simplified for size — which is why Bélem and Cuiabá fall outside it (they drain the separate Tocantins and Paraguay basins).</p>
+      <h3>The data</h3>
+      <p style="margin:0;"><strong>Rainfall and air temperature are real observations</strong> — ERA5 reanalysis (2021–2023 monthly climatology) sampled at the 57 real station coordinates via the <strong>Open-Meteo</strong> Historical Weather API. Every rainfall and temperature surface you see is an interpolation of genuine observation-based data. The only modelled layer is <strong>forest cover</strong> (no open point source was wired); it is built from a deforestation-arc model, so treat the canopy layer — and the forest term in pocket detection — as illustrative. Gauge values are editable: import your own CSV to interpolate a different network.</p>
+      <h3>The interpolation</h3>
+      <p style="margin:0;">The rainfall surface offers two interpolators: <strong>IDW</strong> (inverse-distance weighting — each cell a weighted average of nearby gauges, weight = 1 / distanceᵖ, with adjustable power <b>p</b> and search radius) and <strong>ordinary kriging</strong> (a Gaussian variogram model with adjustable range and nugget). Switching between them shows how the choice of method — not just the data — shapes where pockets appear.</p>
+      <h3>Pocket detection</h3>
+      <p style="margin:0;">Each cell is scored by combining three signals: interpolated rainfall anomaly (vs the basin mean), forest cover, and surface temperature. <span style="color:var(--wet);font-weight:600;">Wet pockets</span> = wet + intact + cool (the recycling engine worth protecting). <span style="color:var(--dry);font-weight:600;">Dry pockets</span> = below-norm rain + low forest + hot (where clearing is breaking the cycle). Outlines are iso-contours via marching squares.</p>
+      <h3>Flying rivers</h3>
+      <p style="margin:0;">The streamlines follow a climatological <strong>moisture-flux field</strong> — Atlantic easterlies sweeping west, then recurving south against the Andes (the South American Low-Level Jet). Each particle's moisture is a <strong>live budget</strong>: it bleeds where the interpolated rainfall sits below the basin norm and where forest cover is low, and recharges over wet, intact canopy. So the rivers visibly run dry over the pockets you've detected, and respond to the season, drying trend, and interpolation settings. The flux direction is illustrative climatology, not a reanalysis wind product.</p>
+      <h3>What this is not</h3>
+      <ul>
+        <li>The rainfall/temperature data are real, but this is a teaching tool — not a forecast, a trend study, or evidence about any specific place.</li>
+        <li>Forest cover and the pocket scoring are illustrative models layered on the real climate data.</li>
+        <li>The “drying years” slider is a <em>what-if</em> illustration, not an observed record.</li>
+        <li>Real attribution of rainfall change needs physical models and long records.</li>
+      </ul>
+      <button class="startbtn" data-close="method">Got it</button>
+    </div>
+  </div>
+
+  <template id="__bundler_thumbnail">
+    <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><rect width="100" height="100" fill="#e9dec6"/><circle cx="50" cy="50" r="22" fill="#4f93b8"/></svg>
+  </template>
+
+  <script src="geo.js?v=29"></script>
+  <script src="climate.js?v=29"></script>
+  <script src="data.js?v=29"></script>
+  <script src="interp.js?v=29"></script>
+  <script src="features.js?v=29"></script>
+  <script src="render.js?v=35"></script>
+  <script src="flow.js?v=29"></script>
+  <script src="app.js?v=33"></script>
+</body>
+</html>
